@@ -9,19 +9,22 @@ package plugin
 
 import (
 	"bufio"
-	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	exec "golang.org/x/sys/execabs"
 
 	"filippo.io/age"
 	"filippo.io/age/internal/format"
+	"filippo.io/age/internal/logger"
+	"filippo.io/age/internal/term"
 )
 
 type Recipient struct {
@@ -179,6 +182,9 @@ func NewIdentity(s string, ui *ClientUI) (*Identity, error) {
 
 func NewIdentityWithoutData(name string, ui *ClientUI) (*Identity, error) {
 	s := EncodeIdentity(name, nil)
+	if s == "" {
+		return nil, fmt.Errorf("invalid plugin name: %q", name)
+	}
 	return &Identity{
 		name: name, encoding: s, ui: ui,
 	}, nil
@@ -318,6 +324,62 @@ type ClientUI struct {
 	WaitTimer func(name string)
 }
 
+func NewClientUI() *ClientUI {
+	return &ClientUI{
+		DisplayMessage: func(name, message string) error {
+			logger.Global.Printf("%s plugin: %s", name, message)
+			return nil
+		},
+		RequestValue: func(name, message string, _ bool) (s string, err error) {
+			defer func() {
+				if err != nil {
+					logger.Global.Warningf("could not read value for age-plugin-%s: %v", name, err)
+				}
+			}()
+			secret, err := term.ReadSecret(message)
+			if err != nil {
+				return "", err
+			}
+			return string(secret), nil
+		},
+		Confirm: func(name, message, yes, no string) (choseYes bool, err error) {
+			defer func() {
+				if err != nil {
+					logger.Global.Warningf("could not read value for age-plugin-%s: %v", name, err)
+				}
+			}()
+			if no == "" {
+				message += fmt.Sprintf(" (press enter for %q)", yes)
+				_, err := term.ReadSecret(message)
+				if err != nil {
+					return false, err
+				}
+				return true, nil
+			}
+			message += fmt.Sprintf(" (press [1] for %q or [2] for %q)", yes, no)
+			for {
+				selection, err := term.ReadCharacter(message)
+				if err != nil {
+					return false, err
+				}
+				switch selection {
+				case '1':
+					return true, nil
+				case '2':
+					return false, nil
+				case '\x03': // CTRL-C
+					return false, errors.New("user cancelled prompt")
+				default:
+					logger.Global.Warningf("reading value for age-plugin-%s: invalid selection %q", name, selection)
+				}
+			}
+		},
+		WaitTimer: func(name string) {
+			logger.Global.Printf("waiting on %s plugin...", name)
+		},
+	}
+}
+
 func (c *ClientUI) handle(name string, conn *clientConnection, s *format.Stanza) (ok bool, err error) {
 	switch s.Type {
 	case "msg":
@@ -382,7 +444,6 @@ type clientConnection struct {
 	cmd       *exec.Cmd
 	io.Reader // stdout
 	io.Writer // stdin
-	stderr    bytes.Buffer
 	close     func()
 }
 
@@ -392,6 +453,8 @@ func openClientConnection(name, protocol string) (*clientConnection, error) {
 	path := "age-plugin-" + name
 	if testOnlyPluginPath != "" {
 		path = filepath.Join(testOnlyPluginPath, path)
+	} else if strings.ContainsRune(name, os.PathSeparator) {
+		return nil, fmt.Errorf("invalid plugin name: %q", name)
 	}
 	cmd := exec.Command(path, "--age-plugin="+protocol)
 

@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"filippo.io/age"
-	"golang.org/x/term"
+	"filippo.io/age/internal/term"
 )
 
 const usage = `Usage:
@@ -126,7 +126,7 @@ func generate(out *os.File) {
 		errorf("internal error: %v", err)
 	}
 
-	if !term.IsTerminal(int(out.Fd())) {
+	if !term.IsTerminal(out) {
 		fmt.Fprintf(os.Stderr, "Public key: %s\n", k.Recipient())
 	}
 
@@ -158,5 +158,5 @@ func errorf(format string, v ...interface{}) {
 }
 
 func warning(msg string) {
-	log.Printf("age-keygen: warning: " + msg)
+	log.Printf("age-keygen: warning: %s", msg)
 }
